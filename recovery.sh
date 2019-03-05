@@ -43,14 +43,8 @@ _EOF_
 #   boolean: true(0) if the SONA apps are activated, false(1) otherwise
 ######################################################################
 function check_sona_app () {
-  check_str='curl -sL -w "%{http_code}\\n" "http://$1:8181/onos/openstacknetworking/management/floatingips/all" -o /dev/null'
-  result=$(eval $check_str)
-  if [ $result == "200" ] ;
-  then
-    return 0
-  else
-    return 1
-  fi
+  check_str='curl -sL --user $ONOS_USER:$ONOS_PASSWORD -w "%{http_code}\\n" "http://$1:8181/onos/openstacknetworking/management/floatingips/all" -o /dev/null'
+  eval $check_str
 }
 
 ######################################################################
@@ -110,7 +104,7 @@ function config_arp_mode () {
 # Returns:
 #   None
 ######################################################################
-function delete_pods () {
+function delete_pod () {
   kubectl delete po $1 -n openstack
 }
 
@@ -123,7 +117,14 @@ function delete_pods () {
 #   None
 ######################################################################
 function check_pod_status () {
-  kubectl get po $1 -n openstack | awk 'FNR == 2 {print $3}'
+  check_str='kubectl get po $1 -n openstack'
+
+  if [[ $(eval $check_str) == Error* ]] ;
+  then
+    echo "Error"
+  else
+    kubectl get po $1 -n openstack | awk 'FNR == 2 {print $3}'
+  fi
 }
 
 ######################################################################
@@ -148,7 +149,7 @@ function backup_node_config () {
 #   None
 ######################################################################
 function restore_node_config () {
-  curl -s --user $ONOS_USER:$ONOS_PASSWORD -X POST -H "Content-Type: application/json" http://$1:8181/onos/openstacknode/configure -d @$SONA_CONFIG_FILE
+  curl -s --user $ONOS_USER:$ONOS_PASSWORD -X POST -H "Content-Type: application/json" http://$1:8181/onos/openstacknode/configure -d @$SONA_CONF_FILE
 }
 
 ######################################################################
@@ -169,11 +170,13 @@ function check_backup_file () {
 }
 
 function main () {
-  pod_name_list=$CLUSTER_POD
+  pod_name_list=()
   pod_ip_list=()
 
+  pod_name_list+=($CLUSTER_POD)
+
   for pod in "${SONA_PODS[@]}"; do
-    pod_name_list="$pod_name_list $pod"
+    pod_name_list+=($pod)
     pod_ip_list+=($(get_pod_ip $pod))
   done
 
@@ -190,45 +193,56 @@ function main () {
     exit 1
   fi
 
-  echo "Delete k8s pods \"$pod_name_list\"..."
-  # echo "pods IPs ${pod_ip_list[@]}"
-  # delete_pods $pod_name_list
+  for pod_name in "${pod_name_list[@]}"; do
+    echo "Delete k8s pod $pod_name..."
+    delete_pod "$pod_name"
+  done
 
   echo "Check pods status..."
   for pod in "${SONA_PODS[@]}"; do
-    check_pod_str='check_pod_status $pod'
-    while [ $(eval $check_pod_str) != "Running" ]
+    while true
     do
-      sleep 5s
+      check_pod_str='check_pod_status $pod'
+      if [ $(eval $check_pod_str) == "Running" ];
+      then
+        break
+      else
+        sleep 5s
+      fi
     done
     echo "$pod is Running!"
   done
 
   echo "Check SONA app status..."
   for pod_ip in "${pod_ip_list[@]}"; do
-    check_sona_app_res=$(eval check_sona_app $pod_ip)
-    while [ $? -eq 1 ]
+    while true
     do
-      sleep 5s
+      # check_sona_app_res=$(eval check_sona_app $pod_ip)
+      check_sona_app_str='check_sona_app $pod_ip'
+      if [ $(eval $check_sona_app_str) == "200" ];
+      then
+        break
+      else
+        sleep 5s
+      fi
     done
     echo "SONA apps at $pod_ip are activated!"
   done
 
-  echo "Restore SONA configuration..."
-  # restore_node_config ${pod_ip_list[0]}
+  echo "Restore SONA configuration for ${pod_ip_list[0]}"
+  restore_node_config ${pod_ip_list[0]}
 
   echo "Configure ARP broadcast mode..."
-  # config_arp_mode ${pod_ip_list[0]} $ARP_MODE
+  config_arp_mode ${pod_ip_list[0]} $ARP_MODE
 
   echo "Synchronize openstack states..."
-  # sync_states ${pod_ip_list[0]}
+  sync_states ${pod_ip_list[0]}
 
   echo "Synchronize openflow rules..."
-  # sync_rules ${pod_ip_list[0]}
+  sync_rules ${pod_ip_list[0]}
 
   rm -rf $SONA_CONF_FILE
   echo "Done!"
 }
 
 main
-
