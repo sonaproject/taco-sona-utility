@@ -68,7 +68,7 @@ function get_pod_ip () {
 #   None
 ######################################################################
 function sync_states () {
-  curl --user $ONOS_USER:$ONOS_PASSWORD -X GET http://$1:8181/onos/openstacknetworking/management/sync/states
+  curl -s --user $ONOS_USER:$ONOS_PASSWORD -X GET http://$1:8181/onos/openstacknetworking/management/sync/states -o /dev/null
 }
 
 ######################################################################
@@ -80,7 +80,7 @@ function sync_states () {
 #   None
 ######################################################################
 function sync_rules () {
-  curl --user $ONOS_USER:$ONOS_PASSWORD -X GET http://$1:8181/onos/openstacknetworking/management/sync/rules
+  curl -s --user $ONOS_USER:$ONOS_PASSWORD -X GET http://$1:8181/onos/openstacknetworking/management/sync/rules -o /dev/null
 }
 
 ######################################################################
@@ -93,7 +93,7 @@ function sync_rules () {
 #   None
 ######################################################################
 function config_arp_mode () {
-  curl --user $ONOS_USER:$ONOS_PASSWORD -X GET http://$1:8181/onos/openstacknetworking/management/config/arpmode/$2
+  curl -s --user $ONOS_USER:$ONOS_PASSWORD -X GET http://$1:8181/onos/openstacknetworking/management/config/arpmode/$2 -o /dev/null
 }
 
 ######################################################################
@@ -117,14 +117,19 @@ function delete_pod () {
 #   None
 ######################################################################
 function check_pod_status () {
-  check_str='kubectl get po $1 -n openstack'
+  kubectl get po $1 -n openstack | awk 'FNR == 2 {print $3}'
+}
 
-  if [[ $(eval $check_str) == Error* ]] ;
-  then
-    echo "Error"
-  else
-    kubectl get po $1 -n openstack | awk 'FNR == 2 {print $3}'
-  fi
+######################################################################
+# Checks k8s POD existence.
+#
+# Arguments:
+#   pod_name: pod name
+# Returns:
+#   None
+######################################################################
+function check_pod_existence () {
+  kubectl get po -n openstack | grep $1 | awk '{print $1}'
 }
 
 ######################################################################
@@ -180,10 +185,10 @@ function main () {
     pod_ip_list+=($(get_pod_ip $pod))
   done
 
-  echo "Backup SONA node configurations..."
+  echo "== Backup SONA node configurations =="
   backup_node_config ${pod_ip_list[0]}
 
-  echo "Check node backup file..."
+  echo "== Check node backup file =="
   node_res=$(check_backup_file)
   if [ $? -eq 0 ]
   then
@@ -193,27 +198,40 @@ function main () {
     exit 1
   fi
 
+  echo "== Purge all SONA pods =="
   for pod_name in "${pod_name_list[@]}"; do
     echo "Delete k8s pod $pod_name..."
     delete_pod "$pod_name"
   done
 
-  echo "Check pods status..."
+  echo "== Check pods status =="
   for pod in "${SONA_PODS[@]}"; do
     while true
     do
-      check_pod_str='check_pod_status $pod'
-      if [ $(eval $check_pod_str) == "Running" ];
+      check_existence_result=$(check_pod_existence $pod)
+      if [ ! -z $check_existence_result ] && [ $check_existence_result == "$pod" ];
       then
         break
       else
         sleep 5s
       fi
     done
+
+    while true
+    do
+      check_pod_result=$(check_pod_status $pod)
+      if [ $check_pod_result == "Running" ];
+      then
+        break
+      else
+        sleep 5s
+      fi
+    done
+
     echo "$pod is Running!"
   done
 
-  echo "Check SONA app status..."
+  echo "== Check SONA app status =="
   for pod_ip in "${pod_ip_list[@]}"; do
     while true
     do
@@ -229,20 +247,20 @@ function main () {
     echo "SONA apps at $pod_ip are activated!"
   done
 
-  echo "Restore SONA configuration for ${pod_ip_list[0]}"
+  echo "== Restore SONA configuration for ${pod_ip_list[0]} =="
   restore_node_config ${pod_ip_list[0]}
 
-  echo "Configure ARP broadcast mode..."
+  echo "== Configure ARP broadcast mode for ${pod_ip_list[0]} =="
   config_arp_mode ${pod_ip_list[0]} $ARP_MODE
 
-  echo "Synchronize openstack states..."
+  echo "== Synchronize openstack states for ${pod_ip_list[0]} =="
   sync_states ${pod_ip_list[0]}
 
-  echo "Synchronize openflow rules..."
+  echo "== Synchronize openflow rules for ${pod_ip_list[0]} =="
   sync_rules ${pod_ip_list[0]}
 
   rm -rf $SONA_CONF_FILE
-  echo "Done!"
+  echo "Done, Bye!"
 }
 
 main
